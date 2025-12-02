@@ -1,63 +1,84 @@
-# Standalone GStreamer Webcam for Windows
+# GStreamer Python Standalone
 
-**Zero-Dependency Deployment:** The final application runs on any Windows machine without installing GStreamer or Python.
+**Fast, low-latency webcam capture for Python that works as a standalone Windows executable.**
 
-## ⚠️ CRITICAL PREREQUISITE: Python Version Match
+## Why This Exists
 
-**You are using GStreamer 1.22+ which bundles Python bindings for Python 3.8, 3.9, 3.10, 3.11, 3.12.**
+OpenCV's default webcam capture on Windows has a critical flaw: **it lags when the window loses focus**. This is unacceptable for background processing, automation, or any app that needs consistent frame rates.
 
-**HOWEVER**, the installer you used (MSVC) seems to only have installed the **Python 3.12 bindings** (checked via file inspection).
+GStreamer solves this, but deploying it is notoriously difficult—until now.
 
-**You must use Python 3.12** for development, OR compile PyGObject yourself.
+This project provides:
+- ✅ **Zero-lag capture** even when minimized or unfocused
+- ✅ **Standalone deployment** with Nuitka (no Python or GStreamer installation needed on target machines)
+- ✅ **Simple API** compatible with OpenCV workflows
+- ✅ **Optimized bundle** (~50-80MB instead of 300MB)
 
-### Option A: Switch to Python 3.12 (Easiest)
-1. Install Python 3.12.
-2. Re-create your environment:
-   ```bash
-   py -3.12 -m venv venv
-   venv\Scripts\activate
-   pip install -r requirements.txt
-   pip install nuitka
-   ```
-3. Point to the bundled GStreamer bindings:
-   ```bash
-   set PYTHONPATH=C:\gstreamer\1.0\msvc_x86_64\lib\site-packages;%PYTHONPATH%
-   ```
+## Quick Start
 
-### Option B: Compile for Python 3.10 (Harder)
-1. Re-install **GStreamer Development MSI** and ensure **"Complete"** is selected (you are missing header files).
-2. Install `pkg-config` support.
-3. Run `pip install PyGObject` again.
+### Prerequisites (Development Machine Only)
+1. **Python 3.12**
+2. **GStreamer MSVC 64-bit** installed to `C:\gstreamer\1.0\msvc_x86_64`
+   - Download: https://gstreamer.freedesktop.org/download/
 
----
-
-## 1. Developer Setup (Once Requirements Met)
-
-1.  **Install GStreamer (MSVC 64-bit)** to `C:\gstreamer\1.0\msvc_x86_64`.
-2.  **Install Dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    pip install nuitka
-    ```
-
-## 2. Build Standalone App
-
-Run the build script. It compiles your Python code and bundles the GStreamer DLLs automatically.
-
+### Install & Run
 ```bash
-python build_standalone.py
+pip install -r requirements.txt
+python webcam_capture.py
 ```
 
-## 3. Deploy
+### Build Standalone Executable
+```bash
+python build_standalone.py
+python optimize_dist.py  # Reduces size and startup time
+```
 
-*   Go to the `build/` folder.
-*   Copy the `webcam_capture.dist` folder to any other computer.
-*   Run `webcam_capture.exe`.
+Your standalone app is now in `build/webcam_capture.dist/`. Zip it and ship it.
 
-**That's it! No installers needed on the target machine.**
+## Usage
+
+```python
+from webcam_capture import GStreamerWebcam
+
+camera = GStreamerWebcam(camera_id=0, width=640, height=480, fps=30)
+camera.start()
+
+while True:
+    ret, frame = camera.read()  # Returns numpy array (BGR, like OpenCV)
+    if ret:
+        # Process frame...
+        pass
+
+camera.release()
+```
+
+## Project Structure
+
+| File | Description |
+|------|-------------|
+| `webcam_capture.py` | Main webcam class with GUI example |
+| `webcam_headless.py` | Headless capture (no window) |
+| `build_standalone.py` | Nuitka build + GStreamer bundling |
+| `optimize_dist.py` | Removes unused plugins for faster startup |
+| `INTEGRATION_GUIDE.md` | How to add this to your own project |
 
 ## How It Works
 
-*   **Self-Configuration:** `webcam_capture.py` detects if it's running as a frozen exe.
-*   **Environment Injection:** It sets `PATH` and `GST_PLUGIN_PATH` to point to the bundled `gstreamer/` folder before loading the library.
-*   **Lag Prevention:** Uses GStreamer's `appsink` with `drop=true` and `max-buffers=1` to ensure the webcam feed never lags.
+1. **Self-configuring:** The app detects if it's running standalone and configures GStreamer paths automatically.
+2. **Bundled runtime:** All GStreamer DLLs are copied into the distribution folder.
+3. **Optimized pipeline:** Uses `appsink` with `drop=true` and `max-buffers=1` to ensure zero latency.
+
+## Troubleshooting
+
+**Slow startup (20+ seconds)?**
+Run `python optimize_dist.py` after building. This removes unused codec plugins.
+
+**"Could not deduce DLL directories"?**
+The `gstreamer` folder must be next to your `.exe`. Check your build output structure.
+
+**No camera detected?**
+Run `python list_cameras.py` to see available devices.
+
+## License
+
+MIT / Public Domain - Use freely.
