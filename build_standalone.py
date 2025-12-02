@@ -11,6 +11,7 @@ from pathlib import Path
 # Standard GStreamer installation path on Windows (MSVC)
 GSTREAMER_ROOT = Path(r"C:\gstreamer\1.0\msvc_x86_64")
 OUTPUT_NAME = "webcam_capture"
+ENTRY_SCRIPT = "settings_gui.py"
 
 def check_prerequisites():
     if not GSTREAMER_ROOT.exists():
@@ -24,14 +25,22 @@ def build_nuitka():
     print("\n--- Building with Nuitka ---")
     
     # Core Nuitka command
+    # PyGObject requires several standard library modules
     cmd = [
         sys.executable, "-m", "nuitka",
         "--standalone",
         # "--windows-disable-console",  # Commented out for debugging
         "--enable-plugin=numpy",
+        "--enable-plugin=pyside6",
+        "--include-module=asyncio",  # Required by PyGObject
+        "--include-module=optparse",  # Required by gi._option
+        "--include-module=gettext",  # Often needed by gi
+        "--include-module=locale",  # Often needed by gi
+        "--include-package=xml",  # Sometimes needed by gi
+        "--include-package=ctypes",  # Required by gi
         "--output-dir=build",
         f"--output-filename={OUTPUT_NAME}.exe",
-        "webcam_capture.py"
+        ENTRY_SCRIPT
     ]
     
     print(f"Executing: {' '.join(cmd)}")
@@ -41,6 +50,17 @@ def build_nuitka():
     except subprocess.CalledProcessError as e:
         print(f"Nuitka build failed with exit code {e.returncode}")
         sys.exit(1)
+    
+    # Rename dist folder to match OUTPUT_NAME
+    entry_name = Path(ENTRY_SCRIPT).stem
+    src_dist = Path(f"build/{entry_name}.dist")
+    dst_dist = Path(f"build/{OUTPUT_NAME}.dist")
+    
+    if src_dist.exists() and src_dist != dst_dist:
+        if dst_dist.exists():
+            shutil.rmtree(dst_dist)
+        src_dist.rename(dst_dist)
+        print(f"Renamed {src_dist} -> {dst_dist}")
 
 def bundle_gstreamer():
     print("\n--- Bundling GStreamer Runtime ---")
@@ -65,7 +85,27 @@ def bundle_gstreamer():
     print(f"Copying {src_lib} -> {dst_lib}")
     shutil.copytree(src_lib, dst_lib)
     
-    # 3. Clean up unnecessary files to reduce size (Optional but recommended)
+    # 3. Copy PyGObject (gi module) to dist root
+    # This is required because PyGObject is not pip-installable on Windows
+    # and must come from the GStreamer installation
+    src_gi = GSTREAMER_ROOT / "lib" / "site-packages" / "gi"
+    dst_gi = dist_dir / "gi"
+    if src_gi.exists():
+        print(f"Copying PyGObject: {src_gi} -> {dst_gi}")
+        if dst_gi.exists():
+            shutil.rmtree(dst_gi)
+        shutil.copytree(src_gi, dst_gi)
+    
+    # Also copy cairo if present (sometimes needed by gi)
+    src_cairo = GSTREAMER_ROOT / "lib" / "site-packages" / "cairo"
+    dst_cairo = dist_dir / "cairo"
+    if src_cairo.exists():
+        print(f"Copying cairo: {src_cairo} -> {dst_cairo}")
+        if dst_cairo.exists():
+            shutil.rmtree(dst_cairo)
+        shutil.copytree(src_cairo, dst_cairo)
+    
+    # 4. Clean up unnecessary files to reduce size (Optional but recommended)
     # Removing headers, .lib definition files, etc.
     print("Cleaning up dev files...")
     for root, dirs, files in os.walk(local_gst_dir):

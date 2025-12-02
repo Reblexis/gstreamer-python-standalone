@@ -8,9 +8,11 @@ GST_LIB = DIST_DIR / "gstreamer/lib/gstreamer-1.0"
 # Essential plugins for webcam capture
 KEEP_PREFIXES = [
     "gstcoreelements",
+    "gstvideoconvertscale",  # Combined convert+scale plugin
     "gstvideoconvert",
     "gstvideoscale",
     "gstvideorate",
+    "gstvideofilter",  # Base video filter
     "gstvideo4linux2",
     "gstdirectshow",     # Windows Camera
     "gstmediafoundation", # Windows Camera (Modern)
