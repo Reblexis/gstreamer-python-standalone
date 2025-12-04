@@ -1,4 +1,12 @@
+# Core dependencies (all platforms)
 opencv-python>=4.9.0
 numpy>=1.26.0
 nuitka>=2.0
 PySide6>=6.6.0
+
+# Linux only: PyGObject can be pip-installed
+# Install build deps first: sudo apt install libgirepository-2.0-dev gcc libcairo2-dev pkg-config python3-dev
+# PyGObject
+# pycairo
+
+# Windows: PyGObject comes bundled with GStreamer installer (not pip-installable)

@@ -1,16 +1,29 @@
 # Integrating GStreamer into Standalone Nuitka/PySide6 Apps
 
-This guide explains how to add GStreamer webcam capture to any Python app and deploy it as a standalone Windows executable.
+This guide explains how to add GStreamer webcam capture to any Python app and deploy it as a standalone executable on **Windows** or **Linux**.
 
 ## Prerequisites (Dev Machine)
 
-1. **Python 3.12** (must match GStreamer's bundled bindings)
-2. **GStreamer MSVC 64-bit** installed to `C:\gstreamer\1.0\msvc_x86_64`
-   - Download both Runtime and Development from https://gstreamer.freedesktop.org/download/
-3. **Dependencies:**
+### Windows
+1. **Python 3.12**
+2. **GStreamer MSVC 64-bit** → `C:\gstreamer\1.0\msvc_x86_64`
+   - Download Runtime + Development from https://gstreamer.freedesktop.org/download/
+3. `pip install nuitka numpy opencv-python PySide6`
+
+### Linux
+1. **Python 3.10+**
+2. **GStreamer** (system packages):
    ```bash
-   pip install nuitka numpy opencv-python PySide6
+   sudo apt install gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+                    gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
+                    gstreamer1.0-libav libgstreamer1.0-dev
    ```
+3. **PyGObject**:
+   ```bash
+   sudo apt install python3-gi gir1.2-gst-plugins-base-1.0
+   # Or in venv: pip install PyGObject (needs libgirepository-2.0-dev)
+   ```
+4. `pip install nuitka numpy opencv-python PySide6`
 
 ---
 
@@ -24,55 +37,53 @@ import sys
 from pathlib import Path
 
 # ============================================================================
-# GSTREAMER STANDALONE CONFIGURATION
+# GSTREAMER STANDALONE CONFIGURATION - Cross-platform
 # Must run BEFORE importing 'gi'
 # ============================================================================
+
+IS_WINDOWS = sys.platform == 'win32'
+IS_LINUX = sys.platform.startswith('linux')
 
 BASE_DIR = Path(sys.executable).resolve().parent
 LOCAL_GST = BASE_DIR / "gstreamer"
 
-# Detect standalone vs dev mode
 if LOCAL_GST.exists():
-    GST_ROOT = LOCAL_GST  # Standalone: use bundled gstreamer
-else:
-    GST_ROOT = Path(r"C:\gstreamer\1.0\msvc_x86_64")  # Dev: use system install
-
-BIN_PATH = GST_ROOT / "bin"
-LIB_PATH = GST_ROOT / "lib"
-PLUGIN_PATH = LIB_PATH / "gstreamer-1.0"
-
-if BIN_PATH.exists():
-    # 1. PATH for DLLs
-    os.environ['PATH'] = str(BIN_PATH) + os.pathsep + os.environ.get('PATH', '')
+    # Standalone mode: use bundled GStreamer
+    if IS_WINDOWS:
+        BIN_PATH = LOCAL_GST / "bin"
+        PLUGIN_PATH = LOCAL_GST / "lib" / "gstreamer-1.0"
+        os.environ['PATH'] = str(BIN_PATH) + os.pathsep + os.environ.get('PATH', '')
+        os.environ['PYGI_DLL_DIRS'] = str(BIN_PATH)
+        os.environ['GST_PLUGIN_PATH'] = str(PLUGIN_PATH)
+        os.environ['GST_PLUGIN_SCANNER'] = str(BIN_PATH / "gst-plugin-scanner.exe")
+        if hasattr(os, 'add_dll_directory'):
+            os.add_dll_directory(str(BIN_PATH))
+    else:  # Linux
+        LIB_PATH = LOCAL_GST / "lib"
+        PLUGIN_PATH = LOCAL_GST / "plugins"
+        os.environ['LD_LIBRARY_PATH'] = str(LIB_PATH) + os.pathsep + os.environ.get('LD_LIBRARY_PATH', '')
+        os.environ['GST_PLUGIN_PATH'] = str(PLUGIN_PATH)
+        os.environ['GST_PLUGIN_SCANNER'] = str(LOCAL_GST / "bin" / "gst-plugin-scanner")
+        gi_typelib = LOCAL_GST / "lib" / "girepository-1.0"
+        if gi_typelib.exists():
+            os.environ['GI_TYPELIB_PATH'] = str(gi_typelib) + os.pathsep + os.environ.get('GI_TYPELIB_PATH', '')
     
-    # 2. PyGObject DLL location
-    os.environ['PYGI_DLL_DIRS'] = str(BIN_PATH)
-    
-    # 3. GStreamer plugin path
-    os.environ['GST_PLUGIN_PATH'] = str(PLUGIN_PATH)
-    
-    # 4. Registry file (avoid conflicts)
     os.environ['GST_REGISTRY'] = str(BASE_DIR / "registry.bin")
-    
-    # 5. Plugin scanner
-    scanner = BIN_PATH / "gst-plugin-scanner.exe"
-    if scanner.exists():
-        os.environ['GST_PLUGIN_SCANNER'] = str(scanner)
-    
-    # 6. CRITICAL: Python 3.8+ DLL loading
-    if hasattr(os, 'add_dll_directory'):
-        os.add_dll_directory(str(BIN_PATH))
-    
-    # 7. Add GStreamer's Python bindings (DEV MODE ONLY)
-    # In standalone mode, gi is bundled in dist root
-    if not LOCAL_GST.exists():
-        gst_site_packages = GST_ROOT / "lib" / "site-packages"
-        if gst_site_packages.exists():
-            sys.path.insert(0, str(gst_site_packages))
+
+elif IS_WINDOWS:
+    # Dev mode: Windows system GStreamer
+    GST_ROOT = Path(r"C:\gstreamer\1.0\msvc_x86_64")
+    if GST_ROOT.exists():
+        os.environ['PATH'] = str(GST_ROOT / "bin") + os.pathsep + os.environ.get('PATH', '')
+        os.environ['GST_PLUGIN_PATH'] = str(GST_ROOT / "lib" / "gstreamer-1.0")
+        if hasattr(os, 'add_dll_directory'):
+            os.add_dll_directory(str(GST_ROOT / "bin"))
+        sys.path.insert(0, str(GST_ROOT / "lib" / "site-packages"))
+
+# Linux dev mode: uses system GStreamer automatically (no setup needed)
 
 # ============================================================================
 
-# NOW import gi and other modules
 import gi
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst
@@ -90,17 +101,18 @@ class GStreamerWebcam:
         self.frame = None
         self.running = False
         
-        # Robust pipeline: let camera output native format, then convert
+        # Platform-specific camera source
+        if sys.platform == 'win32':
+            source = f"mfvideosrc device-index={camera_id} do-timestamp=true ! decodebin"
+        else:  # Linux
+            source = f"v4l2src device=/dev/video{camera_id} do-timestamp=true"
+        
         pipeline_str = (
-            f"mfvideosrc device-index={camera_id} do-timestamp=true ! "
-            f"decodebin ! "
+            f"{source} ! "
             f"videoconvert ! "
-            f"videorate drop-only=true ! "
-            f"video/x-raw,framerate={fps}/1 ! "
-            f"videoscale ! "
-            f"video/x-raw,width={width},height={height} ! "
-            f"videoconvert ! "
-            f"video/x-raw,format=BGR ! "
+            f"videorate drop-only=true ! video/x-raw,framerate={fps}/1 ! "
+            f"videoscale ! video/x-raw,width={width},height={height} ! "
+            f"videoconvert ! video/x-raw,format=BGR ! "
             f"queue max-size-buffers=2 leaky=downstream ! "
             f"appsink name=sink emit-signals=true sync=false max-buffers=1 drop=true"
         )
@@ -118,8 +130,7 @@ class GStreamerWebcam:
             w = caps.get_structure(0).get_value("width")
             success, info = buf.map(Gst.MapFlags.READ)
             if success:
-                arr = np.frombuffer(info.data, dtype=np.uint8)
-                self.frame = arr.reshape((h, w, 3))
+                self.frame = np.frombuffer(info.data, dtype=np.uint8).reshape((h, w, 3))
                 buf.unmap(info)
         return Gst.FlowReturn.OK
 
@@ -139,69 +150,87 @@ class GStreamerWebcam:
 
 ## Step 3: Build Script
 
-Create `build.py`:
+### Windows (`build.py`)
 
 ```python
-import os
-import sys
-import shutil
-import subprocess
+import os, sys, shutil, subprocess
 from pathlib import Path
 
 GSTREAMER_ROOT = Path(r"C:\gstreamer\1.0\msvc_x86_64")
-ENTRY_SCRIPT = "main.py"  # Your main script
-OUTPUT_NAME = "MyApp"
+ENTRY_SCRIPT = "main.py"
 
 def build():
-    # 1. Nuitka compilation
-    # CRITICAL: Include stdlib modules required by PyGObject
-    cmd = [
-        sys.executable, "-m", "nuitka",
-        "--standalone",
-        "--enable-plugin=pyside6",  # If using PySide6
-        "--enable-plugin=numpy",
-        "--include-module=asyncio",   # Required by gi
-        "--include-module=optparse",  # Required by gi._option
-        "--include-module=gettext",   # Required by gi
-        "--include-module=locale",    # Required by gi
-        "--include-package=xml",      # Required by gi
-        "--include-package=ctypes",   # Required by gi
-        "--output-dir=build",
-        f"--output-filename={OUTPUT_NAME}.exe",
-        ENTRY_SCRIPT
-    ]
-    subprocess.run(cmd, check=True)
+    # Nuitka compilation
+    subprocess.run([
+        sys.executable, "-m", "nuitka", "--standalone",
+        "--enable-plugin=pyside6",
+        "--include-module=asyncio", "--include-module=optparse",
+        "--include-module=gettext", "--include-module=locale",
+        "--include-package=xml", "--include-package=ctypes",
+        "--output-dir=build", ENTRY_SCRIPT
+    ], check=True)
     
-    # 2. Determine dist folder
-    entry_name = Path(ENTRY_SCRIPT).stem
-    dist_dir = Path(f"build/{entry_name}.dist")
-    
-    # 3. Bundle GStreamer runtime
+    dist_dir = Path(f"build/{Path(ENTRY_SCRIPT).stem}.dist")
     gst_target = dist_dir / "gstreamer"
-    if gst_target.exists():
-        shutil.rmtree(gst_target)
-    gst_target.mkdir()
     
+    # Bundle GStreamer
     shutil.copytree(GSTREAMER_ROOT / "bin", gst_target / "bin")
     shutil.copytree(GSTREAMER_ROOT / "lib", gst_target / "lib")
     
-    # 4. CRITICAL: Bundle PyGObject (gi module)
-    # PyGObject is NOT pip-installable on Windows, must copy from GStreamer
-    src_gi = GSTREAMER_ROOT / "lib" / "site-packages" / "gi"
-    if src_gi.exists():
-        shutil.copytree(src_gi, dist_dir / "gi")
+    # Bundle PyGObject (required on Windows)
+    shutil.copytree(GSTREAMER_ROOT / "lib/site-packages/gi", dist_dir / "gi")
     
-    src_cairo = GSTREAMER_ROOT / "lib" / "site-packages" / "cairo"
-    if src_cairo.exists():
-        shutil.copytree(src_cairo, dist_dir / "cairo")
-    
-    # 5. Clean dev files
-    for root, dirs, files in os.walk(gst_target):
+    # Clean dev files
+    for root, _, files in os.walk(gst_target):
         for f in files:
             if f.endswith(('.h', '.lib', '.pdb', '.def')):
                 os.remove(os.path.join(root, f))
+
+if __name__ == "__main__":
+    build()
+```
+
+### Linux (`build_linux.py`)
+
+```python
+import os, sys, shutil, subprocess
+from pathlib import Path
+
+ENTRY_SCRIPT = "main.py"
+LIB_PATH = Path("/usr/lib/x86_64-linux-gnu")  # Adjust for your distro
+
+def build():
+    # Nuitka compilation
+    subprocess.run([
+        sys.executable, "-m", "nuitka", "--standalone",
+        "--enable-plugin=pyside6",
+        "--include-module=asyncio", "--include-module=optparse",
+        "--include-module=gettext", "--include-module=locale",
+        "--include-package=xml", "--include-package=ctypes",
+        "--output-dir=build", ENTRY_SCRIPT
+    ], check=True)
     
-    print(f"Build complete: {dist_dir}")
+    dist_dir = Path(f"build/{Path(ENTRY_SCRIPT).stem}.dist")
+    gst_target = dist_dir / "gstreamer"
+    gst_target.mkdir(exist_ok=True)
+    (gst_target / "lib").mkdir(); (gst_target / "plugins").mkdir(); (gst_target / "bin").mkdir()
+    
+    # Bundle GStreamer libraries
+    for lib in LIB_PATH.glob("libgst*.so*"):
+        shutil.copy2(lib, gst_target / "lib" / lib.name, follow_symlinks=False)
+    for lib in LIB_PATH.glob("libglib*.so*"):
+        shutil.copy2(lib, gst_target / "lib" / lib.name, follow_symlinks=False)
+    
+    # Bundle plugins
+    for plugin in (LIB_PATH / "gstreamer-1.0").glob("*.so"):
+        shutil.copy2(plugin, gst_target / "plugins" / plugin.name)
+    
+    # Bundle typelibs
+    (gst_target / "lib/girepository-1.0").mkdir(parents=True)
+    for typelib in ["Gst-1.0", "GstBase-1.0", "GstVideo-1.0", "GstApp-1.0", "GLib-2.0", "GObject-2.0"]:
+        src = LIB_PATH / "girepository-1.0" / f"{typelib}.typelib"
+        if src.exists():
+            shutil.copy2(src, gst_target / "lib/girepository-1.0")
 
 if __name__ == "__main__":
     build()
@@ -209,64 +238,47 @@ if __name__ == "__main__":
 
 ---
 
-## Step 4: Optimize (Reduce Size & Startup Time)
+## Step 4: Optimize (Reduce Size)
 
-Create `optimize.py`:
+Remove unused plugins to reduce size from ~300MB to ~80MB.
 
+### Windows
 ```python
-import os
-from pathlib import Path
+KEEP = ["gstcoreelements", "gstvideoconvert", "gstvideoscale", "gstvideorate",
+        "gstmediafoundation", "gstdirectshow", "gstapp", "gstplayback", "gstjpeg"]
+for dll in Path("build/main.dist/gstreamer/lib/gstreamer-1.0").glob("*.dll"):
+    if not any(dll.name.startswith(p) for p in KEEP):
+        dll.unlink()
+```
 
-DIST_DIR = Path("build/MyApp.dist")  # Adjust to your dist folder name
-GST_PLUGINS = DIST_DIR / "gstreamer/lib/gstreamer-1.0"
-
-# Essential plugins for webcam capture
-KEEP_PREFIXES = [
-    "gstcoreelements", "gstvideoconvert", "gstvideoscale", "gstvideorate",
-    "gstvideofilter", "gstdirectshow", "gstmediafoundation", "gstapp",
-    "gsttypefindfunctions", "gstplayback", "gstjpeg", "gstpng",
-    "gstisomp4", "gstd3d11", "gstd3d12", "gstopengl",
-    "gstaudioconvert", "gstaudioresample", "gstwasapi", "gstwasapi2"
-]
-
-for dll in GST_PLUGINS.glob("*.dll"):
-    if not any(dll.name.startswith(p) for p in KEEP_PREFIXES):
-        os.remove(dll)
-        print(f"Removed: {dll.name}")
-
-print("Optimization complete!")
+### Linux
+```python
+KEEP = ["gstcoreelements", "gstvideoconvert", "gstvideoscale", "gstvideorate",
+        "gstvideo4linux2", "gstapp", "gstplayback", "gstjpeg", "gstlibav"]
+for so in Path("build/main.dist/gstreamer/plugins").glob("*.so"):
+    if not any(so.stem.startswith(p) or so.stem.startswith("lib"+p) for p in KEEP):
+        so.unlink()
 ```
 
 ---
 
 ## Step 5: Deploy
 
-1. Run `python build.py`
-2. Run `python optimize.py`
-3. Your standalone app is in `build/MyApp.dist/`
-4. Zip and distribute — no installation required on target machines
+| Platform | Build | Output | Run |
+|----------|-------|--------|-----|
+| Windows | `python build.py` | `build/main.dist/` | `main.exe` |
+| Linux | `python build_linux.py` | `build/main.dist/` | `./main` |
+
+Zip/tar the dist folder and ship — no GStreamer installation required on target.
 
 ---
 
 ## Troubleshooting
 
-**"ModuleNotFoundError: No module named 'gi'"**
-- The `gi` folder must be copied to the dist root (Step 3.4)
-
-**"ModuleNotFoundError: No module named 'asyncio'" (or optparse, etc.)**
-- Add the missing module to Nuitka's `--include-module` flags
-
-**"Could not deduce DLL directories"**
-- Ensure `os.add_dll_directory(str(BIN_PATH))` runs before importing `gi`
-- Ensure `PYGI_DLL_DIRS` environment variable is set
-
-**Slow startup (20+ seconds)**
-- Run the optimize script to remove unused plugins
-
-**Camera not detected**
-- Try different sources: `mfvideosrc`, `dshowvideosrc`, `ksvideosrc`
-- Check `device-index` (0, 1, 2...)
-
-**Low FPS / Lag**
-- Use `queue leaky=downstream` and `appsink drop=true`
-- Use `videorate drop-only=true` to only drop frames, never duplicate
+| Error | Solution |
+|-------|----------|
+| `No module named 'gi'` | Windows: copy `gi` folder to dist root. Linux: install `python3-gi` |
+| `Namespace Gst not available` | Linux: install `gir1.2-gst-plugins-base-1.0` or bundle typelibs |
+| `Could not open /dev/video0` | Linux: check permissions (`sudo usermod -aG video $USER`) |
+| Camera not detected | Windows: try `mfvideosrc`, `dshowvideosrc`. Linux: try `/dev/video0`, `/dev/video2` |
+| Slow startup (20+ sec) | Run optimize script to remove unused plugins |

@@ -1,13 +1,22 @@
 """
 Headless webcam capture example (no GUI)
 Useful for background processing, saving frames, etc.
+Cross-platform: Windows and Linux
 """
+import sys
+from pathlib import Path
+
+# Platform detection
+IS_WINDOWS = sys.platform == 'win32'
+IS_LINUX = sys.platform.startswith('linux')
+
 import gi
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst, GLib
 import numpy as np
 import time
 from datetime import datetime
+
 
 class HeadlessWebcam:
     def __init__(self, camera_id=0, width=640, height=480, fps=30):
@@ -20,18 +29,27 @@ class HeadlessWebcam:
         self.frame = None
         self.frame_count = 0
         self.running = False
+        self.frame_callback = None
         
+        # Platform-specific source
+        if IS_WINDOWS:
+            source = f"ksvideosrc device-index={camera_id}"
+        else:
+            device_path = f"/dev/video{camera_id}"
+            source = f"v4l2src device={device_path}"
+        
+        # Simple pipeline - let camera output native format, then convert
         pipeline_str = (
-            f"ksvideosrc device-index={camera_id} ! "
-            f"video/x-raw,format=BGR,width={width},height={height},framerate={fps}/1 ! "
+            f"{source} ! "
+            f"videoconvert ! "
+            f"videoscale ! "
+            f"video/x-raw,format=BGR,width={width},height={height} ! "
             f"appsink name=sink emit-signals=true sync=false max-buffers=1 drop=true"
         )
         
         self.pipeline = Gst.parse_launch(pipeline_str)
         self.appsink = self.pipeline.get_by_name('sink')
         self.appsink.connect('new-sample', self.on_new_sample)
-        
-        self.loop = GLib.MainLoop()
     
     def on_new_sample(self, sink):
         sample = sink.emit('pull-sample')
@@ -44,7 +62,6 @@ class HeadlessWebcam:
                 self.frame = frame_data.reshape((self.height, self.width, 3))
                 self.frame_count += 1
                 
-                # Call user callback if set
                 if self.running and self.frame_callback:
                     self.frame_callback(self.frame, self.frame_count)
                 
@@ -65,7 +82,6 @@ class HeadlessWebcam:
         return self.frame.copy() if self.frame is not None else None
 
 
-# Example usage
 def main():
     print("Starting headless webcam capture...")
     print("This runs in the background without a GUI window")
@@ -74,17 +90,12 @@ def main():
     start_time = time.time()
     
     def on_frame(frame, frame_count):
-        # This is called for every frame
         elapsed = time.time() - start_time
         fps = frame_count / elapsed if elapsed > 0 else 0
         
-        # Print stats every 30 frames
         if frame_count % 30 == 0:
             timestamp = datetime.now().strftime("%H:%M:%S")
             print(f"[{timestamp}] Frame {frame_count:5d} | FPS: {fps:.1f} | Shape: {frame.shape}")
-        
-        # Example: You could save frames, process them, etc.
-        # cv2.imwrite(f"frame_{frame_count}.jpg", frame)
     
     camera = HeadlessWebcam(camera_id=0, width=640, height=480, fps=30)
     camera.start(callback=on_frame)
@@ -104,5 +115,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

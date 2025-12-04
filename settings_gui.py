@@ -16,53 +16,94 @@ from pathlib import Path
 # ============================================================================
 # STANDALONE ENVIRONMENT CONFIGURATION
 # This block must run BEFORE importing 'gi'
+# Supports both Windows and Linux
 # ============================================================================
+
+IS_WINDOWS = sys.platform == 'win32'
+IS_LINUX = sys.platform.startswith('linux')
 
 BASE_DIR = Path(sys.executable).resolve().parent
 LOCAL_GST = BASE_DIR / "gstreamer"
 
-if LOCAL_GST.exists():
-    GST_ROOT = LOCAL_GST
-    print(f"DEBUG: Detected standalone mode at {GST_ROOT}")
-elif getattr(sys, 'frozen', False):
-    GST_ROOT = LOCAL_GST
-    print(f"WARNING: Frozen mode detected but {GST_ROOT} missing!")
-else:
-    GST_ROOT = Path(r"C:\gstreamer\1.0\msvc_x86_64")
-    print(f"DEBUG: Detected dev mode at {GST_ROOT}")
 
-BIN_PATH = GST_ROOT / "bin"
-LIB_PATH = GST_ROOT / "lib"
-PLUGIN_PATH = LIB_PATH / "gstreamer-1.0"
-
-if BIN_PATH.exists():
-    print(f"DEBUG: Configuring GStreamer from {GST_ROOT}")
-    os.environ['PATH'] = str(BIN_PATH) + os.pathsep + os.environ.get('PATH', '')
-    os.environ['PYGI_DLL_DIRS'] = str(BIN_PATH)
-    os.environ['GST_PLUGIN_PATH'] = str(PLUGIN_PATH)
-    registry = BASE_DIR / "registry.bin" if getattr(sys, 'frozen', False) else Path("registry.bin")
-    os.environ['GST_REGISTRY'] = str(registry)
-    scanner = LIB_PATH / "gstreamer-1.0" / "gst-plugin-scanner.exe"
-    if not scanner.exists():
-        scanner = BIN_PATH / "gst-plugin-scanner.exe"
-    if scanner.exists():
-        os.environ['GST_PLUGIN_SCANNER'] = str(scanner)
-    if hasattr(os, 'add_dll_directory'):
-        try:
-            os.add_dll_directory(str(BIN_PATH))
-            print(f"DEBUG: os.add_dll_directory({BIN_PATH}) success")
-        except Exception as e:
-            print(f"DEBUG: os.add_dll_directory failed: {e}")
+def _configure_gstreamer_windows():
+    """Configure GStreamer paths for Windows."""
+    if LOCAL_GST.exists():
+        GST_ROOT = LOCAL_GST
+        print(f"DEBUG: Detected standalone mode at {GST_ROOT}")
+    elif getattr(sys, 'frozen', False):
+        GST_ROOT = LOCAL_GST
+        print(f"WARNING: Frozen mode detected but {GST_ROOT} missing!")
+    else:
+        GST_ROOT = Path(r"C:\gstreamer\1.0\msvc_x86_64")
+        print(f"DEBUG: Detected dev mode at {GST_ROOT}")
     
-    # Add GStreamer's Python bindings to path ONLY in dev mode
-    # In standalone mode, PyGObject is bundled by Nuitka
-    if not LOCAL_GST.exists():  # Dev mode only
-        gst_site_packages = GST_ROOT / "lib" / "site-packages"
-        if gst_site_packages.exists() and str(gst_site_packages) not in sys.path:
-            sys.path.insert(0, str(gst_site_packages))
-            print(f"DEBUG: Added {gst_site_packages} to sys.path")
+    BIN_PATH = GST_ROOT / "bin"
+    LIB_PATH = GST_ROOT / "lib"
+    PLUGIN_PATH = LIB_PATH / "gstreamer-1.0"
+    
+    if BIN_PATH.exists():
+        print(f"DEBUG: Configuring GStreamer from {GST_ROOT}")
+        os.environ['PATH'] = str(BIN_PATH) + os.pathsep + os.environ.get('PATH', '')
+        os.environ['PYGI_DLL_DIRS'] = str(BIN_PATH)
+        os.environ['GST_PLUGIN_PATH'] = str(PLUGIN_PATH)
+        registry = BASE_DIR / "registry.bin" if getattr(sys, 'frozen', False) else Path("registry.bin")
+        os.environ['GST_REGISTRY'] = str(registry)
+        scanner = LIB_PATH / "gstreamer-1.0" / "gst-plugin-scanner.exe"
+        if not scanner.exists():
+            scanner = BIN_PATH / "gst-plugin-scanner.exe"
+        if scanner.exists():
+            os.environ['GST_PLUGIN_SCANNER'] = str(scanner)
+        if hasattr(os, 'add_dll_directory'):
+            try:
+                os.add_dll_directory(str(BIN_PATH))
+                print(f"DEBUG: os.add_dll_directory({BIN_PATH}) success")
+            except Exception as e:
+                print(f"DEBUG: os.add_dll_directory failed: {e}")
+        
+        if not LOCAL_GST.exists():
+            gst_site_packages = GST_ROOT / "lib" / "site-packages"
+            if gst_site_packages.exists() and str(gst_site_packages) not in sys.path:
+                sys.path.insert(0, str(gst_site_packages))
+                print(f"DEBUG: Added {gst_site_packages} to sys.path")
+    else:
+        print(f"WARNING: GStreamer bin path not found at {BIN_PATH}")
+
+
+def _configure_gstreamer_linux():
+    """Configure GStreamer paths for Linux."""
+    if LOCAL_GST.exists():
+        GST_ROOT = LOCAL_GST
+        LIB_PATH = GST_ROOT / "lib"
+        BIN_PATH = GST_ROOT / "bin"
+        PLUGIN_PATH = GST_ROOT / "plugins"
+        
+        print(f"DEBUG: Detected standalone mode at {GST_ROOT}")
+        
+        ld_path = os.environ.get('LD_LIBRARY_PATH', '')
+        os.environ['LD_LIBRARY_PATH'] = str(LIB_PATH) + os.pathsep + ld_path
+        os.environ['GST_PLUGIN_PATH'] = str(PLUGIN_PATH)
+        os.environ['GST_REGISTRY'] = str(BASE_DIR / "registry.bin")
+        
+        scanner = BIN_PATH / "gst-plugin-scanner"
+        if scanner.exists():
+            os.environ['GST_PLUGIN_SCANNER'] = str(scanner)
+        
+        gi_typelib_path = GST_ROOT / "lib" / "girepository-1.0"
+        if gi_typelib_path.exists():
+            existing = os.environ.get('GI_TYPELIB_PATH', '')
+            os.environ['GI_TYPELIB_PATH'] = str(gi_typelib_path) + os.pathsep + existing
+    else:
+        print("DEBUG: Using system GStreamer")
+
+
+# Apply platform-specific configuration
+if IS_WINDOWS:
+    _configure_gstreamer_windows()
+elif IS_LINUX:
+    _configure_gstreamer_linux()
 else:
-    print(f"WARNING: GStreamer bin path not found at {BIN_PATH}")
+    print(f"WARNING: Unsupported platform {sys.platform}")
 
 # ============================================================================
 
@@ -81,7 +122,7 @@ from gi.repository import Gst
 import numpy as np
 import cv2
 
-from webcam_capture import GStreamerWebcam
+from webcam_capture import GStreamerWebcam, IS_WINDOWS, IS_LINUX
 
 
 # Fallback resolution presets (used if camera caps unavailable)
@@ -123,13 +164,9 @@ class CameraPreview(QLabel):
         h, w, ch = frame.shape
         bytes_per_line = ch * w
         
-        # Convert BGR to RGB for Qt
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
         q_img = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
         pixmap = QPixmap.fromImage(q_img)
-        
-        # Scale to fit while maintaining aspect ratio
         scaled = pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.setPixmap(scaled)
 
@@ -284,7 +321,6 @@ class SettingsWindow(QMainWindow):
         self.mode_combo.setMinimumWidth(200)
         video_form.addRow("Mode:", self.mode_combo)
         
-        # Also keep manual override option
         self.manual_group = QGroupBox("Manual Override")
         self.manual_group.setCheckable(True)
         self.manual_group.setChecked(False)
@@ -293,25 +329,29 @@ class SettingsWindow(QMainWindow):
         self.resolution_combo = QComboBox()
         for name, w, h in DEFAULT_RESOLUTIONS:
             self.resolution_combo.addItem(name, (w, h))
-        self.resolution_combo.setCurrentIndex(2)  # Default to 1280x720
+        self.resolution_combo.setCurrentIndex(2)
         manual_form.addRow("Resolution:", self.resolution_combo)
         
         self.fps_combo = QComboBox()
         for fps in DEFAULT_FPS_OPTIONS:
             self.fps_combo.addItem(f"{fps} FPS", fps)
-        self.fps_combo.setCurrentIndex(2)  # Default to 30
+        self.fps_combo.setCurrentIndex(2)
         manual_form.addRow("Frame Rate:", self.fps_combo)
         
         video_form.addRow(self.manual_group)
         
         left_layout.addWidget(video_group)
         
-        # GPU acceleration group
+        # GPU acceleration group (Windows only)
         gpu_group = QGroupBox("Acceleration")
         gpu_layout = QVBoxLayout(gpu_group)
         
         self.gpu_checkbox = QCheckBox("Enable D3D11 GPU Acceleration")
-        self.gpu_checkbox.setToolTip("Use DirectX 11 for hardware-accelerated video conversion")
+        if IS_WINDOWS:
+            self.gpu_checkbox.setToolTip("Use DirectX 11 for hardware-accelerated video conversion")
+        else:
+            self.gpu_checkbox.setToolTip("GPU acceleration is only available on Windows")
+            self.gpu_checkbox.setEnabled(False)
         gpu_layout.addWidget(self.gpu_checkbox)
         
         left_layout.addWidget(gpu_group)
@@ -326,10 +366,19 @@ class SettingsWindow(QMainWindow):
         
         self.pipeline_edit = QTextEdit()
         self.pipeline_edit.setMaximumHeight(80)
-        self.pipeline_edit.setPlaceholderText(
-            "e.g.: dshowvideosrc device-index=0 ! videoconvert ! "
-            "video/x-raw,format=BGR ! appsink name=sink emit-signals=true"
-        )
+        
+        # Platform-specific placeholder
+        if IS_WINDOWS:
+            placeholder = (
+                "e.g.: dshowvideosrc device-index=0 ! videoconvert ! "
+                "video/x-raw,format=BGR ! appsink name=sink emit-signals=true"
+            )
+        else:
+            placeholder = (
+                "e.g.: v4l2src device=/dev/video0 ! videoconvert ! "
+                "video/x-raw,format=BGR ! appsink name=sink emit-signals=true"
+            )
+        self.pipeline_edit.setPlaceholderText(placeholder)
         pipeline_layout.addWidget(self.pipeline_edit)
         
         left_layout.addWidget(pipeline_group)
@@ -363,11 +412,11 @@ class SettingsWindow(QMainWindow):
         right_layout.addWidget(self.preview, 1)
         
         # Status
-        self.status_label = QLabel("Status: Ready")
+        platform_str = "Windows" if IS_WINDOWS else "Linux" if IS_LINUX else "Unknown"
+        self.status_label = QLabel(f"Status: Ready ({platform_str})")
         self.status_label.setStyleSheet("color: #888888; padding: 5px;")
         right_layout.addWidget(self.status_label)
         
-        # Add panels to main layout
         main_layout.addWidget(left_panel, 1)
         main_layout.addWidget(right_panel, 2)
     
@@ -387,13 +436,11 @@ class SettingsWindow(QMainWindow):
                 self.status_label.setText("Status: No cameras found")
         except Exception as e:
             self.status_label.setText(f"Status: Error listing cameras: {e}")
-            # Add fallback entries
             for i in range(4):
                 self.camera_combo.addItem(f"{i}: Camera {i}", i)
         
         self.camera_combo.blockSignals(False)
         
-        # Trigger mode refresh for first camera
         if self.camera_combo.count() > 0:
             self.on_camera_changed(0)
     
@@ -408,21 +455,17 @@ class SettingsWindow(QMainWindow):
         try:
             modes = GStreamerWebcam.get_camera_modes(camera_index)
             
-            # Group modes by resolution, show max FPS for each
             seen_resolutions = {}
             for mode in modes:
                 key = (mode['width'], mode['height'])
                 if key not in seen_resolutions or mode['fps'] > seen_resolutions[key]['fps']:
                     seen_resolutions[key] = mode
             
-            # Add all unique modes
             for mode in modes:
-                # Ensure values are integers for display
                 w = int(mode['width'])
                 h = int(mode['height'])
                 fps = int(mode['fps'])
                 label = f"{w}x{h} @ {fps} FPS"
-                # Store as integers
                 mode_data = {'width': w, 'height': h, 'fps': fps}
                 self.mode_combo.addItem(label, mode_data)
             
@@ -450,25 +493,21 @@ class SettingsWindow(QMainWindow):
     
     def start_camera(self):
         """Start the camera with current settings."""
-        self.stop_camera()  # Stop any existing camera
+        self.stop_camera()
         
         try:
             custom_pipeline = self.pipeline_edit.toPlainText().strip()
             
             if custom_pipeline:
-                # Use custom pipeline
                 self.camera = GStreamerWebcam.from_pipeline(custom_pipeline)
             else:
-                # Use GUI settings
                 camera_id = self.camera_combo.currentData() or 0
                 use_gpu = self.gpu_checkbox.isChecked()
                 
-                # Check if manual override is enabled
                 if self.manual_group.isChecked():
                     width, height = self.resolution_combo.currentData() or (1280, 720)
                     fps = self.fps_combo.currentData() or 30
                 else:
-                    # Use selected mode from camera capabilities
                     mode = self.mode_combo.currentData()
                     if mode:
                         width = mode['width']
@@ -489,10 +528,9 @@ class SettingsWindow(QMainWindow):
             
             self.camera.start()
             
-            # Start preview timer
             self.preview_timer = QTimer()
             self.preview_timer.timeout.connect(self.update_preview)
-            self.preview_timer.start(33)  # ~30 FPS preview
+            self.preview_timer.start(33)
             
             self.start_btn.setEnabled(False)
             self.stop_btn.setEnabled(True)
@@ -549,4 +587,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
